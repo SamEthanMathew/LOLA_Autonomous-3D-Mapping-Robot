@@ -9,6 +9,7 @@ import math
 from collections import deque
 import numpy as np
 from scipy.spatial import KDTree
+from scipy.ndimage import binary_closing
 from numba import jit
 
 # --- SLAM Implementation ---
@@ -684,24 +685,64 @@ def export_map_to_image(slam, filename="slam_map.png"):
     
     try:
         surf = pygame.Surface((img_w, img_h))
-        # Fill Unknown (Grey)
-        surf.fill((120, 120, 120))
+        # Fill Unknown (Black) - Matches walls, hides ray gaps
+        surf.fill((0, 0, 0))
         
-        # 2. Draw Cells
-        # We can reuse greedy meshing concept or just draw simple rects for simplicity & robustness in export
-        # Since this is one-time, simple loop is fine.
+        # 2. Process Map (Morphological Closing)
+        # Create dense array
+        dense_map = np.zeros((width_cells, height_cells), dtype=bool)
         
+        # Fill dense map with occupied cells
         for (ix, iy), val in slam.global_grid.items():
-            # Coordinate on surface
-            sx = (ix - min_x) * px_scale
-            sy = (iy - min_y) * px_scale
-            
             weight = val[2]
-            color = (255, 255, 255) if weight < 1.0 else (0, 0, 0)
+            if weight >= 1.0:
+                # Array indices [x, y] relative to min
+                ax = ix - min_x
+                ay = iy - min_y
+                if 0 <= ax < width_cells and 0 <= ay < height_cells:
+                    dense_map[ax, ay] = True
+                    
+        # Apply Binary Closing (Dilation then Erosion) to bridge gaps
+        structure = np.ones((5, 5), dtype=int)
+        closed_map = binary_closing(dense_map, structure=structure, iterations=2)
+        
+        # CONSTRAINT: Do not expand walls into known Free Space
+        # Build dense free map
+        dense_free = np.zeros((width_cells, height_cells), dtype=bool)
+        for (ix, iy), val in slam.global_grid.items():
+            if val[2] < 1.0: # Free
+                ax = ix - min_x
+                ay = iy - min_y
+                if 0 <= ax < width_cells and 0 <= ay < height_cells:
+                    dense_free[ax, ay] = True
+                    
+        # Remove pixels from closed_map that are actually known free space
+        # This prevents "closing" a doorway or corridor that we have seen through
+        closed_map = np.logical_and(closed_map, np.logical_not(dense_free))
+        
+        # 3. Draw Results
+        
+        # First Draw Free Space (White) - Unprocessed
+        # We perform this first so walls overwrite it
+        for (ix, iy), val in slam.global_grid.items():
+            weight = val[2]
+            if weight < 1.0:
+                 sx = (ix - min_x) * px_scale
+                 sy = (iy - min_y) * px_scale
+                 pygame.draw.rect(surf, (255, 255, 255), (sx, sy, px_scale, px_scale))
+                 
+        # Draw Occupied Space (Black) - From Morphological Result
+        # Iterate over the boolean array
+        # This is fast enough for export
+        it = np.nditer(closed_map, flags=['multi_index'])
+        for is_occ in it:
+            if is_occ:
+                ax, ay = it.multi_index
+                sx = ax * px_scale
+                sy = ay * px_scale
+                pygame.draw.rect(surf, (0, 0, 0), (sx, sy, px_scale, px_scale))
             
-            pygame.draw.rect(surf, color, (sx, sy, px_scale, px_scale))
-            
-        # 3. Draw Path (Optional)
+        # 4. Draw Path (Optional)
         if len(slam.path) > 1:
             scaled_path = []
             for px, py, _ in slam.path:
