@@ -8,6 +8,8 @@ import pygame
 import math
 from collections import deque
 import numpy as np
+from scipy.spatial import KDTree
+from numba import jit
 
 # --- SLAM Implementation ---
 def best_fit_transform(A, B):
@@ -53,46 +55,89 @@ def best_fit_transform(A, B):
 
     return T, R, t
 
-def nearest_neighbor(src, dst):
-    '''
-    Find the nearest (Euclidean) neighbor in dst for each point in src
-    Input:
-        src: Nxm array of points
-        dst: Nxm array of points
-    Output:
-        distances: Euclidean distances of the nearest neighbor
-        indices: dst indices of the nearest neighbor
-    '''
-    # Brute force NN (OK for small N < 500)
-    # For speedup could use scipy.spatial.KDTree, but let's stick to numpy broadcasting
-    # Distance matrix: dists[i, j] = ||src[i] - dst[j]||
-    # This might be memory heavy for 1000x1000.
-    # Let's simple loop or use simplified broadcasting if N is small.
+@jit(nopython=True)
+def bresenham_line(x0, y0, x1, y1):
+    """
+    Bresenham's Line Algorithm
+    Returns a list of (x, y) tuples from (x0, y0) to (x1, y1)
+    """
+    points = []
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    x, y = x0, y0
+    sx = -1 if x0 > x1 else 1
+    sy = -1 if y0 > y1 else 1
     
-    # Efficient broadcasting approach:
-    # (x-x')^2 + (y-y')^2 = x^2 + x'^2 - 2xx' + ...
-    # Let's iterate if N is large to save memory
-    
-    indices = np.zeros(src.shape[0], dtype=np.int32)
-    distances = np.zeros(src.shape[0])
-    
-    for i, s in enumerate(src):
-        d = np.linalg.norm(dst - s, axis=1)
-        indices[i] = np.argmin(d)
-        distances[i] = d[indices[i]]
-        
-    return distances, indices
+    if dx > dy:
+        err = dx / 2.0
+        while x != x1:
+            points.append((x, y))
+            err -= dy
+            if err < 0:
+                y += sy
+                err += dx
+            x += sx
+    else:
+        err = dy / 2.0
+        while y != y1:
+            points.append((x, y))
+            err -= dx
+            if err < 0:
+                x += sx
+                err += dy
+            y += sy
+    points.append((x, y))
+    return points
 
-def icp(A, B, init_pose=(0,0,0), max_iterations=10, tolerance=0.001):
-    '''
-    The Iterative Closest Point method: aligns source A to target B
-    '''
-    # Initial transform from init_pose (dx, dy, dtheta)
-    src = np.copy(A)
-    dst = np.copy(B)
+def compute_normals(points, k=5):
+    """
+    Estimate normals for a 2D point cloud using k-nearest neighbors and PCA.
+    Returns: N x 2 array of normal vectors.
+    """
+    if len(points) < k:
+        return np.zeros((len(points), 2)) # Fallback
+        
+    tree = KDTree(points)
+    normals = []
     
-    # Apply initial estimate to src
-    # Rotation
+    # Query k neighbors for all points at once
+    # k+1 because the point itself is included
+    dists, indices = tree.query(points, k=k+1)
+    
+    for i, idxs in enumerate(indices):
+        neighbors = points[idxs]
+        # PCA
+        mean = np.mean(neighbors, axis=0)
+        centered = neighbors - mean
+        cov = np.dot(centered.T, centered)
+        values, vectors = np.linalg.eig(cov)
+        
+        # Normal is eigenvector corresponding to smallest eigenvalue
+        min_idx = np.argmin(values)
+        normal = vectors[:, min_idx]
+        normals.append(normal)
+        
+    return np.array(normals)
+
+def icp(A, B, init_pose=(0,0,0), max_iterations=20, tolerance=0.001):
+    """
+    The Iterative Closest Point method: aligns source A to target B
+    Uses Point-to-Line metric via projected targets.
+    """
+    # Initial transform
+    src = np.copy(A)
+    
+    # Pre-compute Target Info
+    # 1. Build KD-Tree for B (Efficiency)
+    target_tree = KDTree(B)
+    
+    # 2. Compute Normals for B (Point-to-Line)
+    # Only if B has enough points
+    use_plicp = len(B) > 10
+    if use_plicp:
+        B_normals = compute_normals(B, k=6)
+    
+    # Apply initial estimate
     theta = init_pose[2]
     c, s = math.cos(theta), math.sin(theta)
     R_init = np.array([[c, -s], [s, c]])
@@ -100,7 +145,7 @@ def icp(A, B, init_pose=(0,0,0), max_iterations=10, tolerance=0.001):
     src += init_pose[:2]
     
     prev_error = 0
-    total_T = np.identity(3) # 3x3 for 2D points (x, y, 1)
+    total_T = np.identity(3)
     
     # Handle initial offset in matrix form
     T_init = np.identity(3)
@@ -109,25 +154,49 @@ def icp(A, B, init_pose=(0,0,0), max_iterations=10, tolerance=0.001):
     total_T = np.dot(T_init, total_T)
 
     for i in range(max_iterations):
-        # find the nearest neighbors between the current source and destination points
-        distances, indices = nearest_neighbor(src, dst)
+        # 1. Find correspondence
+        # Query tree for all src points
+        distances, indices = target_tree.query(src)
+        
+        target_points = B[indices]
+        
+        # 2. Optimize
+        if use_plicp:
+            # Point-to-Line Improvement:
+            # Project src points onto the plane defined by (target_point, normal)
+            # q_proj = p - dot(p - q, n) * n
+            # But wait, we want to align 'src' to 'target line'.
+            # We treat 'q_proj' as the point 'src' should try to reach to satisfy the planar constraint.
+            
+            normals = B_normals[indices]
+            
+            # Vector from point in B to point in A
+            diff = src - target_points
+            
+            # Project this vector onto the normal
+            # dot product row-wise
+            dist_along_normal = np.sum(diff * normals, axis=1)
+            
+            # The target point on the "line" is src shifted back along the normal
+            # dest = src - dist * normal
+            # This works effectively as allowing sliding along the wall
+            target_points_proj = src - (normals * dist_along_normal[:, np.newaxis])
+            
+            # Use these projected points as targets for standard SVD solver
+            T, _, _ = best_fit_transform(src, target_points_proj)
+        else:
+             # Standard Point-to-Point
+             T, _, _ = best_fit_transform(src, target_points)
 
-        # compute the transformation between the current source and nearest destination points
-        T, _, _ = best_fit_transform(src, dst[indices])
-
-        # update the current source
-        # src is Nx2. T is 3x3. Homogenous coords needed.
+        # 3. Update
         src_h = np.ones((src.shape[0], 3))
         src_h[:,:2] = src
-        
-        # transform
         src_h = np.dot(T, src_h.T).T
         src = src_h[:,:2]
 
-        # update the total transformation
         total_T = np.dot(T, total_T)
 
-        # check error
+        # Check error (Mean Distance)
         mean_error = np.mean(distances)
         if np.abs(prev_error - mean_error) < tolerance:
             break
@@ -261,30 +330,50 @@ class SimpleSLAM:
              # Transform dense scan to global
              global_points = np.dot(dense_scan, R_global.T) + self.pose[:2]
              
-             # PROBABILISTIC UPDATE
+             # PROBABILISTIC UPDATE (RAYCASTING)
+             # Update cells along the ray to be FREE
+             # Update end point to be OCCUPIED
+             
+             # Convert robot pose to grid coords
+             rob_ix = int(round(self.pose[0] / self.GRID_RESOLUTION))
+             rob_iy = int(round(self.pose[1] / self.GRID_RESOLUTION))
+             
              for p in global_points:
                  gx, gy = p[0], p[1]
-                 # Quantize to grid key
                  ix = int(round(gx / self.GRID_RESOLUTION))
                  iy = int(round(gy / self.GRID_RESOLUTION))
-                 key = (ix, iy)
                  
+                 # Raycast from robot to hit point
+                 # 'bresenham_line' returns integers
+                 cells = bresenham_line(rob_ix, rob_iy, ix, iy)
+                 
+                 # Mark free space (all except last one)
+                 for i in range(len(cells) - 1):
+                     cx, cy = cells[i]
+                     key = (cx, cy)
+                     if key in self.global_grid:
+                         # DECREASE occupancy
+                         # We use a float for probability-like behavior:
+                         # 0.0 = Free, >1.0 = Occupied
+                         self.global_grid[key][2] = max(0.1, self.global_grid[key][2] - 0.5) 
+                     else:
+                         # Register as Free Space (Seen, but empty)
+                         # We store [cx, cy, count]
+                         # Using 0.01 to indicate "we saw it, but it's empty"
+                         # We need the real coordinates for the key roughly
+                         self.global_grid[key] = [cx * self.GRID_RESOLUTION, cy * self.GRID_RESOLUTION, 0.1]
+                 
+                 # Mark occupied (last point)
+                 key = (ix, iy)
                  if key in self.global_grid:
-                     # Fuse with existing (Running Average)
                      cell = self.global_grid[key]
-                     # Soft cap on count to allow slow adaptation if environment changes
-                     # but high enough to converge noise (e.g. 50)
+                     # Fuse
                      if cell[2] < 50:
                          cell[0] += gx
                          cell[1] += gy
-                         cell[2] += 1
-                     else:
-                         # Rolling average for adaptation?
-                         # For now just keep it stable
-                         pass
+                         cell[2] += 1.0 # Add 1 for hit
                  else:
-                     # New cell
-                     self.global_grid[key] = [gx, gy, 1]
+                     self.global_grid[key] = [gx, gy, 1.0]
                           
              self.prev_dense_scan = dense_scan_small # Update reference
              self.path.append(self.pose.copy())
@@ -558,6 +647,80 @@ def calculate_exploration_vector(cartesian_points):
 
         
 
+def export_map_to_image(slam, filename="slam_map.png"):
+    """
+    Exports the current global grid to a PNG image.
+    Auto-crops to the explored area.
+    """
+    if not slam.global_grid:
+        print("Map is empty, nothing to save.")
+        return False
+        
+    # 1. Calculate Bounds
+    # Keys are (ix, iy)
+    min_x = min_y = float('inf')
+    max_x = max_y = float('-inf')
+    
+    for (ix, iy) in slam.global_grid.keys():
+        if ix < min_x: min_x = ix
+        if ix > max_x: max_x = ix
+        if iy < min_y: min_y = iy
+        if iy > max_y: max_y = iy
+        
+    # Add padding (1 meter = 1000mm / 30mm res ~= 33 cells)
+    padding = 10
+    min_x -= padding
+    max_x += padding
+    min_y -= padding
+    max_y += padding
+    
+    width_cells = max_x - min_x + 1
+    height_cells = max_y - min_y + 1
+    
+    # Scale for output image (1 pixel per cell is too small, let's do 4x)
+    px_scale = 4
+    img_w = width_cells * px_scale
+    img_h = height_cells * px_scale
+    
+    try:
+        surf = pygame.Surface((img_w, img_h))
+        # Fill Unknown (Grey)
+        surf.fill((120, 120, 120))
+        
+        # 2. Draw Cells
+        # We can reuse greedy meshing concept or just draw simple rects for simplicity & robustness in export
+        # Since this is one-time, simple loop is fine.
+        
+        for (ix, iy), val in slam.global_grid.items():
+            # Coordinate on surface
+            sx = (ix - min_x) * px_scale
+            sy = (iy - min_y) * px_scale
+            
+            weight = val[2]
+            color = (255, 255, 255) if weight < 1.0 else (0, 0, 0)
+            
+            pygame.draw.rect(surf, color, (sx, sy, px_scale, px_scale))
+            
+        # 3. Draw Path (Optional)
+        if len(slam.path) > 1:
+            scaled_path = []
+            for px, py, _ in slam.path:
+                 ix = int(px / slam.GRID_RESOLUTION)
+                 iy = int(py / slam.GRID_RESOLUTION)
+                 sx = (ix - min_x) * px_scale
+                 sy = (iy - min_y) * px_scale
+                 scaled_path.append((sx, sy))
+            
+            if len(scaled_path) > 1:
+                pygame.draw.lines(surf, (0, 255, 0), False, scaled_path, 2)
+
+        pygame.image.save(surf, filename)
+        print(f"Map saved to {filename}")
+        return True
+    except Exception as e:
+        print(f"Error saving map: {e}")
+        return False
+
 if __name__ == "__main__":
     # Initialize LiDAR
     lidar = LidarSensor()
@@ -583,13 +746,15 @@ if __name__ == "__main__":
     font_label = pygame.font.SysFont("monospace", 12)
 
     # Colors (Sci-Fi Theme)
-    COLOR_BG = (10, 15, 20)      # Dark Blue-Black
-    COLOR_GRID = (40, 60, 80)    # Faint Blue-Grey
-    COLOR_AXIS = (60, 90, 120)   # Brighter Axis
-    COLOR_POINT_NEW = (0, 255, 255) # Cyan (Newest)
-    COLOR_POINT_OLD = (0, 100, 100) # Dark Cyan (Oldest)
-    COLOR_ROBOT = (255, 50, 50)  # Red
-    COLOR_TEXT = (200, 255, 255) # White-Cyan
+    # Colors (ROS / Occupancy Grid Theme)
+    COLOR_BG = (120, 120, 120)   # Grey (Unknown)
+    COLOR_FREE = (255, 255, 255) # White (Free)
+    COLOR_OCCUPIED = (0, 0, 0)   # Black (Occupied)
+    
+    COLOR_GRID = (100, 100, 100) # Slightly darker grey
+    COLOR_AXIS = (255, 0, 0)     # Red Axis
+    COLOR_ROBOT = (0, 255, 0)    # Green Robot
+    COLOR_TEXT = (0, 0, 0)       # Black Text
 
     # Visualization settings
     scale = 0.15  # Pixels per mm (0.15 = 150px per meter. Fits ~5m room on screen)
@@ -619,6 +784,10 @@ if __name__ == "__main__":
     # Exploration Vector Smoothing (EMA)
     exp_smooth_x = 0.0
     exp_smooth_y = 0.0
+    
+    # Save Notification
+    last_save_time = 0
+    save_msg = ""
 
     print("Radar UI started. Drag to Pan, Scroll to Zoom.")
 
@@ -652,6 +821,20 @@ if __name__ == "__main__":
                         view_offset_x += dx
                         view_offset_y += dy
                         last_mouse_pos = event.pos
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_s:
+                        # Save Map
+                        export_dir = "map_exports"
+                        if not os.path.exists(export_dir):
+                            os.makedirs(export_dir)
+                            
+                        timestamp = time.strftime("%Y%m%d-%H%M%S")
+                        filename = os.path.join(export_dir, f"slam_map_{timestamp}.png")
+                        
+                        if export_map_to_image(slam_system, filename):
+                             # Show feedback
+                             last_save_time = time.time()
+                             save_msg = f"Saved to {export_dir}/"
             
             # --- Rendering ---
             screen.fill(COLOR_BG)
@@ -735,20 +918,94 @@ if __name__ == "__main__":
                             color = (0, intensity, intensity) 
                             pygame.draw.circle(screen, color, (int(sx), int(sy)), 2)
 
-            # 3.5. Draw SLAM Global Map (Grid)
-            # Points are already in Global Frame
+            # 3.5. Draw SLAM Global Map (Occupancy Grid Style)
             if SHOW_SLAM_MAP:
+                # Iterate only over visible cells ideally, but python dict iteration is fast enough for <50k cells
+                # To look like a filled map, we draw rectangles (pixels), not circles
+                
+                # Pre-calculate screen center to avoid doing it in loop
+                # We need to lock the dictionary or copy it to avoid runtime error if thread updates it
+                # For now, we assume simple access is fine
+                
+                # Optimized Rendering: Draw "Free" first, then "Occupied"
+                # Actually, iterating once is better.
+                
+                rects_free = []
+                rects_occupied = []
+                
+                # 1. Collect Valid Cells
+                # We collect dict keys (ix, iy) -> type (0=Free, 1=Occupied)
+                # To optimize, we separate them into lists
+                
+                # Optimized collection (culling off-screen)
+                grid_res = slam_system.GRID_RESOLUTION
+                cols_free = {} # y -> list of x
+                cols_occ = {}  # y -> list of x
+                
+                # Screen bounds in grid coords
+                # map_origin + x * scale = 0  =>  x = -map_origin / scale
+                min_vis_x = int((-map_origin_x / scale) / grid_res) - 2
+                max_vis_x = int(((WIDTH - map_origin_x) / scale) / grid_res) + 2
+                min_vis_y = int((-map_origin_y / scale) / grid_res) - 2
+                max_vis_y = int(((HEIGHT - map_origin_y) / scale) / grid_res) + 2
+                
                 for key, val in slam_system.global_grid.items():
-                    if val[2] < 1: continue 
-                    mx = val[0] / val[2]
-                    my = val[1] / val[2]
+                    gx, gy = key[0], key[1]
                     
-                    sx = map_origin_x + mx * scale
-                    sy = map_origin_y + my * scale
+                    # Culling
+                    if not (min_vis_x <= gx <= max_vis_x and min_vis_y <= gy <= max_vis_y):
+                        continue
+                        
+                    weight = val[2]
+                    target_dict = cols_free if weight < 1.0 else cols_occ
                     
-                    if 0 <= sx <= WIDTH and 0 <= sy <= HEIGHT:
-                         cness = min(255, 50 + val[2]*10)
-                         pygame.draw.circle(screen, (cness, cness, cness), (int(sx), int(sy)), 1)
+                    if gy not in target_dict:
+                        target_dict[gy] = []
+                    target_dict[gy].append(gx)
+                
+                # 2. Greedy Meshing (Horizontal Merging) & Drawing
+                grid_size_px = max(1, int(grid_res * scale))
+                # Slight overlap to prevent gaps? No, standard Size is best.
+                # Adding 1px sometimes helps with float rounding gaps, but depends on scale.
+                
+                def draw_merged_type(col_dict, color):
+                    for y, xs in col_dict.items():
+                        xs.sort()
+                        if not xs: continue
+                        
+                        # Greedy merge
+                        start_x = xs[0]
+                        curr_x = xs[0]
+                        
+                        for x in xs[1:]:
+                            if x == curr_x + 1:
+                                # Contiguous
+                                curr_x = x
+                            else:
+                                # Break
+                                # Draw rect from start_x to curr_x (inclusive)
+                                pixels_x = int(map_origin_x + start_x * grid_res * scale)
+                                pixels_y = int(map_origin_y + y * grid_res * scale)
+                                width = int((curr_x - start_x + 1) * grid_res * scale)
+                                # Ensure minimal width due to float trunc
+                                if width < grid_size_px: width = grid_size_px
+                                
+                                # Sometimes width needs +1 to avoid hairline gaps
+                                pygame.draw.rect(screen, color, (pixels_x, pixels_y, width + 1, grid_size_px + 1))
+                                
+                                start_x = x
+                                curr_x = x
+                        
+                        # Draw final segment
+                        pixels_x = int(map_origin_x + start_x * grid_res * scale)
+                        pixels_y = int(map_origin_y + y * grid_res * scale)
+                        width = int((curr_x - start_x + 1) * grid_res * scale)
+                        pygame.draw.rect(screen, color, (pixels_x, pixels_y, width + 1, grid_size_px + 1))
+
+                draw_merged_type(cols_free, COLOR_FREE)
+                draw_merged_type(cols_occ, COLOR_OCCUPIED)
+
+                 # Draw Path
                          
                 # Draw Path
                 if len(slam_system.path) > 1:
@@ -847,10 +1104,28 @@ if __name__ == "__main__":
                 "Controls: Drag=Pan, Scroll=Zoom"
             ]
             
+            # Draw semi-transparent background for HUD
+            # Calculate required size
+            max_w = 0
+            total_h = len(texts) * line_height + 10
+            for t in texts:
+                w, h = font_hud.size(t)
+                max_w = max(max_w, w)
+            
+            hud_surf = pygame.Surface((max_w + 20, total_h), pygame.SRCALPHA)
+            hud_surf.fill((0, 0, 0, 150)) # Black with alpha
+            screen.blit(hud_surf, (5, 5))
+            
+            hud_y = 10
             for text_str in texts:
-                s = font_hud.render(text_str, True, COLOR_TEXT)
-                screen.blit(s, (10, hud_y))
+                s = font_hud.render(text_str, True, (255, 255, 255))
+                screen.blit(s, (15, hud_y))
                 hud_y += line_height
+                
+            # Draw Save Notification
+            if time.time() - last_save_time < 3.0: # Show for 3 seconds
+                 save_surf = font_hud.render(save_msg, True, (0, 255, 0))
+                 screen.blit(save_surf, (WIDTH // 2 - save_surf.get_width() // 2, HEIGHT - 50))
 
             # Update display
             pygame.display.flip()
