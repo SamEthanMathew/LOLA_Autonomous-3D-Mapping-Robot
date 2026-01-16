@@ -521,12 +521,15 @@ class NetworkRPLidar:
                     if not self.conn: return
                     packet = self.conn.recv(struct_len - len(data))
                     if not packet:
+                        print("Network Lidar: Receive returned 0 bytes (Client closed).")
                         return # Connection closed
                     data += packet
                     
                 quality, angle, distance = struct.unpack(struct_fmt, data)
+                # print(f"DEBUG RX: {angle:.1f}deg, {distance:.1f}mm")
                 yield (0, quality, angle, distance) 
-            except OSError:
+            except OSError as e:
+                print(f"Network Lidar: Socket Error: {e}")
                 return # Socket closed or bad descriptor
             except Exception as e:
                 print(f"Network error: {e}")
@@ -537,9 +540,16 @@ class NetworkRPLidar:
         return self.iter_measurements(max_buf_meas)
                 
     def stop(self):
+        # Only close the client connection, keep server listener open for reconnection
         if self.conn:
             self.conn.close()
-        self.sock.close()
+            self.conn = None
+            
+    def shutdown(self):
+        # Actually close the server listener
+        self.stop()
+        if self.sock:
+             self.sock.close()
         
     def stop_motor(self):
         pass
@@ -1390,5 +1400,11 @@ if __name__ == "__main__":
         pass
     finally:
         print("Stopping LiDAR...")
-        lidar.stop()
+        try:
+            if hasattr(lidar.lidar, 'shutdown'):
+                lidar.lidar.shutdown()
+            else:
+                lidar.stop()
+        except:
+            pass
         pygame.quit()
