@@ -99,7 +99,10 @@ def run_sender(host, port, device_port):
 
     # 4. Stream Loop
     try:
-        iterator = lidar.iter_measurements(max_buf_meas=3000)
+        try:
+            iterator = lidar.iter_measurments(max_buf_meas=3000)
+        except AttributeError:
+             iterator = lidar.iter_measurements(max_buf_meas=3000)
         count = 0
         last_print = time.time()
         

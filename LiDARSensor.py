@@ -520,6 +520,10 @@ class NetworkRPLidar:
             except Exception as e:
                 print(f"Network error: {e}")
                 break
+    
+    # Alias to support the typo in some rplidar versions/calls
+    def iter_measurments(self, max_buf_meas=3000):
+        return self.iter_measurements(max_buf_meas)
                 
     def stop(self):
         if self.conn:
