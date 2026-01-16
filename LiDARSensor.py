@@ -10,7 +10,10 @@ from collections import deque
 import numpy as np
 from scipy.spatial import KDTree
 from scipy.ndimage import binary_closing
+from scipy.spatial import KDTree
+from scipy.ndimage import binary_closing
 from numba import jit
+import argparse
 
 # --- SLAM Implementation ---
 def best_fit_transform(A, B):
@@ -795,6 +798,16 @@ def export_map_to_image(slam, filename="slam_map.png"):
         return False
 
 if __name__ == "__main__":
+    # Parse Arguments
+    parser = argparse.ArgumentParser(description="LiDAR SLAM System")
+    parser.add_argument("--headless", action="store_true", help="Run without a graphical window (for Pi/SSH)")
+    args = parser.parse_args()
+
+    if args.headless:
+        # Set dummy video driver for Pygame (no window)
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
+        print("Running in HEADLESS mode. No window will be shown.")
+
     # Initialize LiDAR
     lidar = LidarSensor()
     time.sleep(2) # Allow time for spin up and connection
@@ -817,6 +830,48 @@ if __name__ == "__main__":
     # Fonts
     font_hud = pygame.font.SysFont("monospace", 16)
     font_label = pygame.font.SysFont("monospace", 12)
+    
+    # Console Input Listener (Thread)
+    def console_listener(slam_sys):
+        """
+        Listens for keyboard input from the console (SSH friendly).
+        """
+        print("\n--- CONSOLE CONTROLS ---")
+        print(" 's' + Enter: Save map to png")
+        print(" 'q' + Enter: Quit")
+        print("------------------------\n")
+        
+        while True:
+            try:
+                if sys.stdin.isatty():
+                    cmd = input().strip().lower()
+                else:
+                    # Non-interactive mode (e.g. background process), simply sleep
+                    time.sleep(1)
+                    continue
+                    
+                if cmd == 's':
+                    # Save Map
+                    export_dir = "map_exports"
+                    if not os.path.exists(export_dir):
+                        os.makedirs(export_dir)
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    filename = os.path.join(export_dir, f"slam_map_{timestamp}.png")
+                    export_map_to_image(slam_sys, filename)
+                elif cmd == 'q':
+                    print("Quitting from console...")
+                    # Post QUIT event to main loop
+                    pygame.event.post(pygame.event.Event(pygame.QUIT))
+                    break
+            except EOFError:
+                break
+            except Exception as e:
+                # print(f"Console error: {e}")
+                pass
+    
+    # Start input thread
+    input_thread = threading.Thread(target=console_listener, args=(slam_system,), daemon=True)
+    input_thread.start()
 
     # Colors (Sci-Fi Theme)
     # Colors (ROS / Occupancy Grid Theme)
