@@ -490,7 +490,7 @@ class LidarSensor:
         # otherwise we might need to initialize it here if specific port passed.
         if not hasattr(self, 'lidar'):
              print(f"Attempting to connect to specific/fallback port: {port}")
-             self.lidar = RPLidar(port, timeout=5)
+             self.lidar = RPLidar(port, timeout=5, max_buf_meas=3000)
         
         # Robust initialization
         try:
@@ -545,7 +545,7 @@ class LidarSensor:
                 print(f"  Trying baudrate: {baud}...")
                 try:
                     # Try to connect and get info (reduced timeout for faster checks)
-                    temp_lidar = RPLidar(port, baudrate=baud, timeout=2)
+                    temp_lidar = RPLidar(port, baudrate=baud, timeout=2, max_buf_meas=3000)
                     # Force stop in case it's already spinning
                     try:
                         temp_lidar.stop()
@@ -557,7 +557,7 @@ class LidarSensor:
                     print(f"Success! Found LiDAR on {port} at {baud} baud: {info}")
                     temp_lidar.disconnect()
                     # Re-initialize the main lidar object with the correct baudrate
-                    self.lidar = RPLidar(port, baudrate=baud, timeout=5)
+                    self.lidar = RPLidar(port, baudrate=baud, timeout=5, max_buf_meas=3000)
                     self.port = port
                     return port
                 except Exception as e:
@@ -814,11 +814,12 @@ if __name__ == "__main__":
     
     # Try to slow down motor to increase point density (more samples per degree)
     # Default is often 1023 (max). 600-700 is a good target for A1/A2.
-    try:
-        lidar.lidar.set_pwm(200)
-        print("Set PWM to 660 for denser scanning")
-    except Exception as e:
-        print(f"Could not set PWM (might not be supported): {e}")
+    # DISABLED FOR PI STABILITY (Buffer Overflows)
+    # try:
+    #     lidar.lidar.set_pwm(200)
+    #     print("Set PWM to 660 for denser scanning")
+    # except Exception as e:
+    #     print(f"Could not set PWM (might not be supported): {e}")
     
     
     # Initialize Pygame
