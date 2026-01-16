@@ -948,6 +948,49 @@ if __name__ == "__main__":
     input_thread = threading.Thread(target=console_listener, args=(slam_system,), daemon=True)
     input_thread.start()
 
+    # --- Control Server Thread (for bi-directional CLI from Pi) ---
+    def control_server_thread(slam_sys, port=12346):
+        print(f"Control Server: Listening on port {port}")
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            server_sock.bind(('0.0.0.0', port))
+            server_sock.listen(1)
+            
+            while True:
+                conn, addr = server_sock.accept()
+                # print(f"Control: Connected by {addr}")
+                try:
+                     while True:
+                        data = conn.recv(1024)
+                        if not data: break
+                        
+                        msg = data.decode('utf-8').strip()
+                        response = "UNKNOWN"
+                        
+                        if msg == "GET_TURN":
+                             # Calculate turn command
+                             cmd = slam_sys.get_turn_command()
+                             if cmd is None:
+                                 response = "TURN None"
+                             else:
+                                 response = f"TURN {cmd:.2f}"
+                        else:
+                             response = f"ECHO {msg}"
+                             
+                        conn.sendall(response.encode('utf-8'))
+                except Exception as e:
+                    print(f"Control Error: {e}")
+                finally:
+                    conn.close()
+        except Exception as e:
+            print(f"Failed to bind control server: {e}")
+
+    if args.network:
+        # Start control server
+        ctrl_thread = threading.Thread(target=control_server_thread, args=(slam_system,), daemon=True)
+        ctrl_thread.start()
+
     # Colors (Sci-Fi Theme)
     # Colors (ROS / Occupancy Grid Theme)
     COLOR_BG = (120, 120, 120)   # Grey (Unknown)
