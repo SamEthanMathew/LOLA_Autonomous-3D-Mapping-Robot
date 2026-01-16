@@ -501,7 +501,8 @@ class NetworkRPLidar:
 
     def iter_measurements(self, max_buf_meas=3000):
         # We ignore max_buf_meas as we just stream what we get
-        struct_fmt = '<Bff' # uchar, float, float
+        # Protocol V2: NewScan(1) + Quality(1) + Angle(4) + Distance(4)
+        struct_fmt = '<BBff' 
         struct_len = struct.calcsize(struct_fmt)
         
         # Accept connection if not yet connected
@@ -521,7 +522,7 @@ class NetworkRPLidar:
                         break
                     # If we are here, we are skipping garbage bytes to find sync
                 
-                # Now read the remaining 9 bytes (struct_len)
+                 # Now read the remaining 10 bytes (struct_len)
                 data = b''
                 while len(data) < struct_len:
                     if not self.conn: return
@@ -531,16 +532,11 @@ class NetworkRPLidar:
                         return # Connection closed
                     data += packet
                     
-                quality, angle, distance = struct.unpack(struct_fmt, data)
-                
-                # Detect start of new scan (angle wrap-around from 359 -> 0)
-                new_scan = False
-                if angle < self.last_angle:
-                     new_scan = True
-                self.last_angle = angle
+                new_scan_int, quality, angle, distance = struct.unpack(struct_fmt, data)
+                new_scan = bool(new_scan_int)
                 
                 # if random.randint(0, 100) == 0: 
-                # print(f"DEBUG RX: {angle:.1f}deg, {distance:.1f}mm")
+                # print(f"DEBUG RX: {angle:.1f}deg, {distance:.1f}mm, NewScan: {new_scan}")
                 yield (new_scan, quality, angle, distance) 
             except OSError as e:
                 print(f"Network Lidar: Socket Error: {e}")
