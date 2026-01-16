@@ -533,10 +533,14 @@ class NetworkRPLidar:
                     data += packet
                     
                 new_scan_int, quality, angle, distance = struct.unpack(struct_fmt, data)
-                new_scan = bool(new_scan_int)
+                # new_scan = bool(new_scan_int) # Packet flag seems spammy/unreliable
                 
-                # if random.randint(0, 100) == 0: 
-                # print(f"DEBUG RX: {angle:.1f}deg, {distance:.1f}mm, NewScan: {new_scan}")
+                # Robust Logic: Detect start of new scan via angle wrap-around
+                new_scan = False
+                if angle < self.last_angle and (self.last_angle - angle) > 100:
+                     # e.g. 359 -> 1 (diff 358)
+                     new_scan = True
+                self.last_angle = angle
                 yield (new_scan, quality, angle, distance) 
             except OSError as e:
                 print(f"Network Lidar: Socket Error: {e}")
