@@ -391,6 +391,78 @@ class SimpleSLAM:
         """Returns (x, y, theta_degrees)"""
         return self.pose[0], self.pose[1], math.degrees(self.pose[2])
 
+    # GET TURN ANGLE
+    def calculate_exploration_vector(self, cartesian_points):
+        """
+        Returns the angle (degrees) of the 'deepest' sector (most open space).
+        Input: numpy array or list of [x, y] points (in robot local frame)
+        """
+        if len(cartesian_points) == 0:
+            return None
+            
+        # Analyze in 10-degree sectors
+        SECTOR_SIZE = 10
+        num_sectors = 360 // SECTOR_SIZE
+        sector_sums = [0.0] * num_sectors
+        sector_counts = [0] * num_sectors
+        
+        # Convert Cart to Polar
+        for p in cartesian_points:
+            x, y = p[0], p[1]
+            dist = math.sqrt(x*x + y*y)
+            if dist > 0:
+                angle_rad = math.atan2(y, x)
+                angle_deg = math.degrees(angle_rad) % 360
+                
+                idx = int(angle_deg // SECTOR_SIZE)
+                
+                if 0 <= idx < num_sectors:
+                    sector_sums[idx] += dist
+                    sector_counts[idx] += 1
+                    
+        best_idx = -1
+        max_avg = -1.0
+        
+        for i in range(num_sectors):
+            if sector_counts[i] > 5: # Threshold
+                avg = sector_sums[i] / sector_counts[i]
+                if avg > max_avg:
+                    max_avg = avg
+                    best_idx = i
+                    
+        if best_idx != -1:
+            # Return center angle
+            # We want -180 to 180 range usually? 
+            # Logic above uses 0-360.
+            angle = best_idx * SECTOR_SIZE + (SECTOR_SIZE / 2)
+            if angle > 180: angle -= 360
+            return angle
+        return None
+
+    def get_turn_command(self):
+        """
+        Calculates the best direction to move into open space.
+        Returns:
+            angle_deg (float): The relative angle to turn (negative=right, positive=left).
+                               Returns None if no map data.
+        """
+        map_pts = self.get_map_points()
+        if len(map_pts) < 10:
+            return None
+            
+        recent_map = np.array(map_pts)
+        
+        # Transform Global -> Local
+        rob_x, rob_y, rob_theta = self.pose
+        c, s = math.cos(rob_theta), math.sin(rob_theta)
+        R_inv = np.array([[c, s], [-s, c]])
+        
+        pts_centered = recent_map - np.array([rob_x, rob_y])
+        local_map_pts = np.dot(pts_centered, R_inv.T)
+        
+        target_angle_local = self.calculate_exploration_vector(local_map_pts)
+        return target_angle_local
+
 def normalize_angle(angle_deg):
     """Normalize angle to [-180, 180]"""
     while angle_deg > 180:
@@ -601,50 +673,10 @@ class ScanObject:
         self.distance = scanBase[2] # Keep in mm
         self.revolution = revolution
 
-def calculate_exploration_vector(cartesian_points):
-    """
-    Returns the angle (degrees) of the 'deepest' sector (most open space).
-    Input: numpy array or list of [x, y] points (in robot local frame)
-    """
-    if len(cartesian_points) == 0:
-        return None
-        
-    # Analyze in 10-degree sectors
-    SECTOR_SIZE = 10
-    num_sectors = 360 // SECTOR_SIZE
-    sector_sums = [0.0] * num_sectors
-    sector_counts = [0] * num_sectors
-    
-    # Convert Cart to Polar
-    # We can do this efficiently
-    # But loop is fine for <3000 points
-    for p in cartesian_points:
-        x, y = p[0], p[1]
-        dist = math.sqrt(x*x + y*y)
-        if dist > 0:
-            angle_rad = math.atan2(y, x)
-            angle_deg = math.degrees(angle_rad) % 360
-            
-            idx = int(angle_deg // SECTOR_SIZE)
-            
-            if 0 <= idx < num_sectors:
-                sector_sums[idx] += dist
-                sector_counts[idx] += 1
-                
-    best_idx = -1
-    max_avg = -1.0
-    
-    for i in range(num_sectors):
-        if sector_counts[i] > 5: # Threshold
-            avg = sector_sums[i] / sector_counts[i]
-            if avg > max_avg:
-                max_avg = avg
-                best_idx = i
-                
-    if best_idx != -1:
-        # Return the center angle of the best sector
-        return best_idx * SECTOR_SIZE + (SECTOR_SIZE / 2)
-    return None
+        self.angle = scanBase[1]
+        self.distance = scanBase[2] # Keep in mm
+        self.revolution = revolution
+
 
         
 
@@ -1070,23 +1102,14 @@ if __name__ == "__main__":
 
             # 5. Draw Exploration Vector (Yellow Line)
             # Use SLAM MAP for stability
-            map_pts = slam_system.get_map_points()
-            if len(map_pts) > 10:
-                recent_map = np.array(map_pts)
-                
-                # Transform Global -> Local (for calculation)
-                c, s = math.cos(rob_theta), math.sin(rob_theta)
-                R_inv = np.array([[c, s], [-s, c]])
-                
-                pts_centered = recent_map - np.array([rob_x, rob_y])
-                local_map_pts = np.dot(pts_centered, R_inv.T)
-                
-                target_angle_local = calculate_exploration_vector(local_map_pts)
-                
-                # NAVIGATION COMMAND
-                turn_cmd_deg = 0.0
+            
+            # Simple API call:
+            target_angle_local = slam_system.get_turn_command()
+            
+            # NAVIGATION COMMAND
+            turn_cmd_deg = 0.0
 
-                if target_angle_local is not None:
+            if target_angle_local is not None:
                     # Smoothing (Local Frame)
                     t_rad_local = math.radians(target_angle_local)
                     tx, ty = math.cos(t_rad_local), math.sin(t_rad_local)
