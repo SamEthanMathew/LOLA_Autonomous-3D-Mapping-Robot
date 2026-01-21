@@ -140,8 +140,9 @@ Build18-Contribution/
 | 1 | Motor Driver | 1 | 10.59 | 10.59 | [L298N Motor Driver](https://www.amazon.com/dp/B0C5JCF5RS?ref=ppx_yo2ov_dt_b_fed_asin_title) |
 | 2 | Robot Car Chassis | 1 | 39.21 | 39.21 | [Mecanum Robot Chassis](https://www.seeedstudio.com/Robot-car-Kit-RC-Smart-Car-Chassis-p-4226.html) |
 | 3 | LiDAR Sensor | 1 | 104.94 | 104.94 | [RPLIDAR A1M8](https://a.co/d/cjdxPnk) |
-| 4 | Pi4 Power Supply | 1 | ~ | ~ | Used a power bank |
-| 5 | 9V Battery | 2 | ~ | ~ | 9V Alkaline Batteries |
+| 4 | USB Camera | 1 | ~ | ~ | Used a regular pc camera |
+| 5 | Pi4 Power Supply | 1 | ~ | ~ | Used a power bank |
+| 6 | 9V Battery | 2 | ~ | ~ | 9V Alkaline Batteries |
 |  | **Total** |  |  | **154.74** |  |
 
 
