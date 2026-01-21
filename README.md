@@ -12,9 +12,9 @@
 
 ---
 
-## 🚀 Overview
+## Overview
 
-**LOLA** is a $150 mecanum-drive RC rover running on a Raspberry Pi 4 that autonomously explores and reconstructs 3D environments. The system combines LiDAR-based SLAM with RGB-only 3D reconstruction to create detailed spatial maps — all without relying on expensive depth cameras.
+**LOLA** is a $150 mecanum-drive RC rover running on a Raspberry Pi 4 that autonomously explores and reconstructs 3D environments. The system combines LiDAR-based SLAM with RGB-only 3D reconstruction to create detailed spatial maps, all without relying on expensive depth cameras.
 
 ### Key Features
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 🛠️ Technical Approach
+## Technical Approach
 
 ### Hardware
 - **Platform**: Mecanum-drive RC rover chassis
@@ -87,7 +87,7 @@ We use **CUT3R** (Camera-Unified Transformer for 3D Reconstruction):
 
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```
 Build18-Contribution/
@@ -103,7 +103,7 @@ Build18-Contribution/
 
 ---
 
-## 🔧 Installation & Setup
+## Installation & Setup
 
 ### On Raspberry Pi 4
 
@@ -130,7 +130,7 @@ Build18-Contribution/
 
 ---
 
-## 🚗 Usage
+## Usage
 
 ### 1. Run SLAM and Generate Map
 
@@ -171,11 +171,11 @@ Loads the planned path and sends motor commands to follow waypoints autonomously
 1. Record RGB video while rover explores
 2. Upload to Colab
 3. Run `Vidto3Dmodel_Reconstruction.ipynb`
-4. Download reconstructed 3D model
+4. Download the reconstructed 3D model
 
 ---
 
-## 🎯 Results
+## Results
 
 - **SLAM Performance**: Real-time mapping at 10Hz with consistent loop closure
 - **Path Planning**: RRT generates collision-free paths in <2 seconds
@@ -184,10 +184,10 @@ Loads the planned path and sends motor commands to follow waypoints autonomously
 
 ---
 
-## 👥 Team
+## Team
 
 Built with ❤️ by:
-- **Samet**
+- **Sam**
 - **Darren**
 - **Tanay**
 - **Jayde**
@@ -195,7 +195,7 @@ Built with ❤️ by:
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 Huge thanks to:
 - The **Build18** organizing team
@@ -205,19 +205,14 @@ Huge thanks to:
 
 ---
 
-## 📜 License
+## License
 
 This project is open-source and available under the MIT License.
 
 ---
 
-## 📸 Media
 
-> *Add photos and videos of LOLA in action here!*
-
----
-
-## 🔗 References
+## References
 
 - [CUT3R: Camera-Unified Transformer for 3D Reconstruction](https://github.com/nianticlabs/cutr)
 - [Point-to-Line ICP](https://ieeexplore.ieee.org/document/6906555)
