@@ -1,7 +1,7 @@
 # LOLA - Autonomous 3D-Mapping Robot
 
 **Built in one week for Build18 2026**
-![Build18](https://img.shields.io/badge/license-MIT-blue)
+![Build18](https://img.shields.io/badge/program-Build18-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%204-red)
 
